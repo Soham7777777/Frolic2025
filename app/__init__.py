@@ -1,24 +1,29 @@
 from flask import Flask
-import click
+from sqlalchemy.orm import DeclarativeBase, MappedAsDataclass
+from flask_sqlalchemy import SQLAlchemy
+import app.commands as commands
 import os
 
 
-@click.command()
-def _test() -> None:
-    """Run tests.
-    """        
-    import tests
-    tests.run()
+class Base(MappedAsDataclass, DeclarativeBase):
+  pass
+
+
+db = SQLAlchemy(model_class=Base)
 
 
 def make_app() -> Flask:
-    application = Flask(__name__)
+    application = Flask(__name__, instance_relative_config=True)
+    application.cli.add_command(commands.test)
 
     application.config.from_object(f'instance.{os.getenv('PROFILE', 'Development')}')
 
-    from .blueprints import blog, admin
-    application.register_blueprint(blog.bp)
+    from app.models import User, Coordinator, Organizer, BranchAdmin, Participant, Team, TeamWiseParticipants, Event, EventThumbnail, UserWiseProfilePicture # type: ignore
+    db.init_app(application)
+    with application.app_context():
+      db.create_all()
+
+    from .blueprints import admin
     application.register_blueprint(admin.bp)
 
-    application.cli.add_command(_test, name='test')
     return application
