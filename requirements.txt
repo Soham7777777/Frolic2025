@@ -3,7 +3,9 @@ blinker==1.8.2
 click==8.1.7
 dnspython==2.7.0
 email_validator==2.2.0
+Faker==30.8.2
 Flask==3.0.3
+Flask-SQLAlchemy==3.1.1
 greenlet==3.1.1
 idna==3.10
 itsdangerous==2.2.0
@@ -13,8 +15,9 @@ mypy==1.13.0
 mypy-extensions==1.0.0
 pydantic==2.9.2
 pydantic_core==2.23.4
+python-dateutil==2.9.0.post0
 python-dotenv==1.0.1
+six==1.16.0
 SQLAlchemy==2.0.36
-sqlmodel==0.0.22
 typing_extensions==4.12.2
 Werkzeug==3.0.6
