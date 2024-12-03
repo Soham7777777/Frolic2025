@@ -1,10 +1,13 @@
 from collections.abc import Sequence
 import datetime
 from enum import StrEnum, auto
-from pathlib import Path
+import os
+from pathlib import Path, PurePath
 import string
 from typing import Annotated, Any, NoReturn, Optional, Self, Set, TypeVar
-from sqlalchemy import Dialect, ForeignKey, create_engine, event, Connection
+from flask import current_app
+import nh3
+from sqlalchemy import Dialect, ForeignKey, String, create_engine, event, Connection
 from sqlalchemy.orm import MappedAsDataclass, sessionmaker, Mapped, mapped_column, validates, Mapper, relationship
 import sqlalchemy.types as types
 from sqlalchemy.ext.hybrid import hybrid_property
@@ -12,18 +15,17 @@ from pydantic import BaseModel, ConfigDict, FilePath, PositiveInt, TypeAdapter, 
 from email_validator import validate_email
 import re
 from dataclasses import KW_ONLY
-from frolicapp import db
+from frolicapp import db, assets_dir
 
 
 MB = int(1e+6)
 KB = int(1e+3)
 T = TypeVar('T')
 Seq = TypeVar('Seq', bound=Sequence[Any])
-IMAGE_EXTENSIONS = tuple('jpg jpe jpeg png gif svg bmp webp'.split())
+IMAGE_EXTENSIONS = tuple('jpg jpeg png '.split())
 NO_SIDE_SPACE = r'^\S.*\S$|^\S$'
 
 PrimaryKey = Mapped[Annotated[int, mapped_column(primary_key=True, autoincrement=True)]]
-Timestamp = Mapped[Annotated[datetime.datetime, mapped_column(insert_default=datetime.datetime.now())]]
 
 
 def validate_type(ta: TypeAdapter[T], obj: T) -> T:
@@ -177,6 +179,7 @@ class ConstrainedImagePath(types.TypeDecorator[str]):
 
     This type decorator ensures that a file path meets specific constraints before
     storing it in the database. The file must:
+    - Be under the specified directory
     - Be a valid image path.
     - Adhere to a specified maximum size limit (in bytes).
     """
@@ -186,7 +189,11 @@ class ConstrainedImagePath(types.TypeDecorator[str]):
 
     def process_bind_param(self, value: Any | None, dialect: Dialect) -> Any:
         if value is None : return None
-        return str(ConstrainedImagePathModel(path=Path(value), max_bytes=self.max_bytes).path.resolve())
+        abs_path = PurePath(str(ConstrainedImagePathModel(path=Path(value), max_bytes=self.max_bytes).path.resolve()))
+        root_dir = PurePath(os.path.join(current_app.instance_path, assets_dir))
+        if not abs_path.is_relative_to(root_dir):
+            raise ValueError(f'The file must be under {str(Path(root_dir).resolve())} but located at {str(Path(abs_path).resolve())}.') 
+        return str(abs_path.relative_to(root_dir))
     
     def __init__(self, max_bytes: int) -> None:
         self.max_bytes = max_bytes
@@ -201,6 +208,7 @@ class EmailString(types.TypeDecorator[str]):
     deliverability verification.
     """
     impl = types.String
+    cache_ok = True
 
     def process_bind_param(self, value: str | None, dialect: Dialect) -> Any:
         if value is None : return None
@@ -263,12 +271,19 @@ class TimestampMixin(MappedAsDataclass):
     This mixin provides `created_at` and `updated_at` timestamp fields for tracking the creation
     and modification times of database records. Both fields are immutable after initial creation.
     """
-    created_at: Timestamp = mapped_column(init=False)
-    updated_at: Timestamp = mapped_column(init=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(init=False, insert_default=datetime.datetime.now().replace(microsecond=0))
+    updated_at: Mapped[datetime.datetime] = mapped_column(init=False, insert_default=datetime.datetime.now().replace(microsecond=0))
 
     @validates('created_at')
     def validator(self, key: str, val: datetime.datetime) -> NoReturn:
         raise AttributeError(f"Cannot modify constant field '{key}'.")
+
+
+class MinGreaterThanMaxError(ValueError):
+    """Custom exception raised when the minimum value is greater than the maximum value."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
 
 
 engine = create_engine('sqlite:///:memory:', echo=True)
@@ -375,6 +390,9 @@ class User(db.Model, TimestampMixin): # type: ignore
         "polymorphic_on": "role",
     }
 
+    def __hash__(self) -> int:
+        return hash(self.email)
+
 
 class Coordinator(User):
     """SQLAlchemy ORM model representing a coordinator, inherited from `User`.
@@ -397,11 +415,14 @@ class Coordinator(User):
     coordinator_id: Mapped[int] = mapped_column(ForeignKey('user.user_id'), primary_key=True, init=False)
     event_id: Mapped[int] = mapped_column(ForeignKey('event.event_id'), init=False)
 
-    event: Mapped["Event"] = relationship(init=True)
+    event: Mapped["Event"] = relationship(init=True, back_populates='coordinators')
 
     __mapper_args__ = {
         "polymorphic_identity": Role.COORDINATOR.value,
     }
+
+    def __hash__(self) -> int:
+        return super().__hash__()
 
 
 class Organizer(User):
@@ -425,11 +446,14 @@ class Organizer(User):
     organizer_id: Mapped[int] = mapped_column(ForeignKey('user.user_id'), primary_key=True, init=False)
     event_id: Mapped[int] = mapped_column(ForeignKey('event.event_id'), init=False, unique=True)
 
-    event: Mapped["Event"] = relationship(init=True)
+    event: Mapped["Event"] = relationship(init=True, back_populates='organizers')
 
     __mapper_args__ = {
         "polymorphic_identity": Role.ORGANIZER.value,
     }
+
+    def __hash__(self) -> int:
+        return super().__hash__()
 
 
 class Participant(User):
@@ -448,6 +472,7 @@ class Participant(User):
     Relationships:
         teams (Mapped[Set[TeamWiseParticipants]]): Defines a one-to-many relationship with `TeamWiseParticipants`, 
             allowing a participant to be part of multiple teams.
+        leaderships: Mapped[Set["Team"]]: Defines a one-to-many relationship with `Team` is set of teams created by this participant.
 
     Polymorphic Behavior:
         The `role` for this model is set to `PARTICIPANT`, which determines its polymorphic identity.
@@ -456,15 +481,16 @@ class Participant(User):
     college_name: Mapped[str] = mapped_column(ConstrainedString(min=2, max=64, allowed_chars=string.ascii_letters, pattern=NO_SIDE_SPACE), init=True)
     branch: Mapped[Branch] = mapped_column(init=True)
 
-    teams: Mapped[Set[TeamWiseParticipants]] = relationship(init=False, back_populates='participant')
+    teams: Mapped[Set[TeamWiseParticipants]] = relationship(init=False, back_populates='participant', cascade='all, delete')
+    leaderships: Mapped[Set["Team"]] = relationship(init=False, back_populates='leader', cascade='all, delete')
 
     __mapper_args__ = {
         "polymorphic_identity": Role.PARTICIPANT.value,
     }
 
     def __hash__(self) -> int:
-        return hash(self.email)
-    
+        return super().__hash__()
+
 
 class BranchAdmin(User):
     """SQLAlchemy ORM model representing a branch admin, inherited from `User`.
@@ -487,8 +513,16 @@ class BranchAdmin(User):
         "polymorphic_identity": Role.BRANCHADMIN.value,
     }
 
-
-ALLOWED_TEAM_SIZE_CONSTRAIN = ConstrainedInteger(min=1, max=7)
+    def __hash__(self) -> int:
+        return super().__hash__()
+    
+    
+EVT_ALLOWED_TEAM_SIZE_CONSTRAIN = ConstrainedInteger(min=1, max=7)
+EVT_NAME_LEN = (2, 64)
+EVT_DESCRIPTION_LEN = (8, 512)
+EVT_THUMBNAIL_MAX_SIZE = 5 * MB
+EVT_MAX_TEAMS_CONSTRAIN = ConstrainedInteger(min=1, max=50)
+EVT_DETAILS_SIZE = 9000
 class Event(db.Model, TimestampMixin): # type: ignore
     """SQLAlchemy ORM model representing an event.
 
@@ -514,24 +548,34 @@ class Event(db.Model, TimestampMixin): # type: ignore
         modified_by (Mapped[User]): The user who last modified the event.
         thumbnail (Mapped[Optional["EventThumbnail"]]): The thumbnail image associated with the event.
     """
+    _: KW_ONLY
     event_id: PrimaryKey = mapped_column(init=False)
-    name: Mapped[str] = mapped_column(ConstrainedString(min=2, max=64, allowed_chars=string.ascii_letters+' ', pattern=NO_SIDE_SPACE), init=True, unique=True)
+    name: Mapped[str] = mapped_column(ConstrainedString(min=EVT_NAME_LEN[0], max=EVT_NAME_LEN[1], allowed_chars=string.ascii_lowercase+' ', pattern=NO_SIDE_SPACE), init=True, unique=True)
     branch: Mapped[Branch] = mapped_column(init=True)
-    description: Mapped[str] = mapped_column(ConstrainedString(min=8, max=256, allowed_chars=string.ascii_letters+' ', pattern=NO_SIDE_SPACE), init=True)
-    min_team_size: Mapped[int] = mapped_column(ALLOWED_TEAM_SIZE_CONSTRAIN, init=True)
-    max_team_size: Mapped[int] = mapped_column(ALLOWED_TEAM_SIZE_CONSTRAIN, init=True)
-    max_teams: Mapped[int] = mapped_column(ConstrainedInteger(min=1, max=1000),  init=True)
+    description: Mapped[str] = mapped_column(ConstrainedString(min=EVT_DESCRIPTION_LEN[0], max=EVT_DESCRIPTION_LEN[1], allowed_chars=string.ascii_letters+' '+string.punctuation, pattern=NO_SIDE_SPACE), init=True)
+    min_team_size: Mapped[int] = mapped_column(EVT_ALLOWED_TEAM_SIZE_CONSTRAIN, init=True)
+    max_team_size: Mapped[int] = mapped_column(EVT_ALLOWED_TEAM_SIZE_CONSTRAIN, init=True)
+    max_teams: Mapped[int] = mapped_column(EVT_MAX_TEAMS_CONSTRAIN,  init=True)
     start_time: Mapped[datetime.time] = mapped_column(init=True)
+    details: Mapped[Optional[str]] = mapped_column(String(EVT_DETAILS_SIZE), init=True, default=None)
     created_by_id: Mapped[int] = mapped_column(ForeignKey('user.user_id'), init=False)
     modified_by_id: Mapped[int] = mapped_column(ForeignKey('user.user_id'), init=False)
 
     created_by: Mapped[User] = relationship(init=True, foreign_keys=[created_by_id])
     modified_by: Mapped[User] = relationship(init=False, foreign_keys=[modified_by_id])
     thumbnail: Mapped[Optional["EventThumbnail"]] = relationship(init=True, default=None, cascade='all, delete')
+    teams: Mapped[Set["Team"]] = relationship(init=False, back_populates='event', cascade='all, delete')
+    coordinators: Mapped[Set["Coordinator"]] = relationship(init=False, back_populates='event', cascade='all, delete', foreign_keys=[Coordinator.event_id])
+    organizers: Mapped[Set["Organizer"]] = relationship(init=False, back_populates='event', cascade='all, delete', foreign_keys=[Organizer.event_id])
 
     def __post_init__(self) -> None:
-        if self.min_team_size > self.max_team_size : raise ValueError('Non-compitable values for minimum and maximum team size.')
+        if self.min_team_size > self.max_team_size : raise MinGreaterThanMaxError('Minimum team size must be less than or equal to maximum team size.')
         self.modified_by = self.created_by
+
+    @validates('details')
+    def senitize_details_markup(self, key: str, value: str | None) -> str | None:
+        if value is None: return None
+        return nh3.clean(value, tags={"strong", "em", "h1", "h2", "p", "u", "ol", "ul", "li", "a", "table", "tbody", "thead", "th", "tr", "td"}, url_schemes={'https'})
 
 
 class EventThumbnail(db.Model): # type: ignore
@@ -547,7 +591,7 @@ class EventThumbnail(db.Model): # type: ignore
     """
     event_thumbnail_id: PrimaryKey = mapped_column(init=False)
     event_id: Mapped[int] = mapped_column(ForeignKey('event.event_id'), init=False, unique=True)
-    path: Mapped[str] = mapped_column(ConstrainedImagePath(max_bytes=5*MB), unique=True, init=True)
+    path: Mapped[str] = mapped_column(ConstrainedImagePath(max_bytes=EVT_THUMBNAIL_MAX_SIZE), unique=True, init=True)
 
 
 class Team(db.Model): # type: ignore
@@ -571,13 +615,17 @@ class Team(db.Model): # type: ignore
     team_id: PrimaryKey = mapped_column(init=False)
     leader_id: Mapped[int] = mapped_column(ForeignKey('participant.participant_id'), init=False)
     event_id: Mapped[int] = mapped_column(ForeignKey('event.event_id'), init=False)
+    name: Mapped[str] = mapped_column(ConstrainedString(min=EVT_NAME_LEN[0], max=EVT_NAME_LEN[1], allowed_chars=string.ascii_lowercase+' ', pattern=NO_SIDE_SPACE), init=True, unique=True)
 
-    leader: Mapped[Participant] = relationship(init=True)
-    participants: Mapped[Set[TeamWiseParticipants]] = relationship(init=False, back_populates='team')
-    event: Mapped[Event] = relationship(init=True)
+    leader: Mapped[Participant] = relationship(init=True, back_populates='leaderships')
+    participants: Mapped[Set[TeamWiseParticipants]] = relationship(init=False, back_populates='team', cascade='all, delete')
+    event: Mapped[Event] = relationship(init=True, back_populates='teams')
+
+    def __hash__(self) -> int:
+        return hash(self.name)
 
 
 @event.listens_for(Event, 'before_update')
 @event.listens_for(User, 'before_update')
 def receive_before_update(mapper: Mapper[User | Event], connection: Connection, target: User | Event) -> None:
-    target.updated_at = datetime.datetime.now()
+    target.updated_at = datetime.datetime.now().replace(microsecond=0)

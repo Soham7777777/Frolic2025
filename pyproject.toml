@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "frolic_webserver"
-version = "1.0.0"
+version = "1.0.1"
 requires-python = ">= 3.12"
 dependencies = [
     "Flask==3.0.3", 
@@ -13,8 +13,18 @@ dependencies = [
     "mypy==1.13.0",
     "Flask-SQLAlchemy==3.1.1",
     "email_validator==2.2.0",
-    "Faker==30.8.2"
+    "Faker==30.8.2",
+    "nh3==0.2.18",
+    "Flask-WTF==1.2.2"
 ]
+authors = [
+  {name = "Soham Jobanputra", email = "sohamjobanputra7@gmail.com"},
+]
+description = "An event management system made with Flask."
+readme = "README.md"
+
+[project.urls]
+Repository = "https://github.com/Soham7777777/Frolic2025"
 
 [project.scripts]
 frolic = "frolicapp:cli"
