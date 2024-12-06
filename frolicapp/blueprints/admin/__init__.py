@@ -166,8 +166,11 @@ def delete_user() -> Response:
         if user.user_id == admin.user_id:
             flash("You cannot delete yourself.", FlashCategory.INFO.value)
             return redirect(url_for('Admin.home'))
+        dp_path = user.profile_picture.path
         db.session.delete(user)
         db.session.commit()
+        if dp_path is not None:
+            os.remove(os.path.join(current_app.instance_path, assets_dir, dp_path))
         flash("The user has been deleted successfully.", FlashCategory.SUCCESS.value)
         return redirect(url_for('Admin.home'))
     raise exceptions.NotFound()

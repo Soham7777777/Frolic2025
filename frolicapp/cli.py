@@ -34,6 +34,7 @@ def generate_mock_user() -> User:
     fname = fake.first_name()
     lname = fake.last_name()
     email = fname + str(time.time_ns()) + '@gmail.com'
+    time.sleep(.001)
     return User(fname=fname, lname=lname, email=email)
 
 
@@ -264,6 +265,7 @@ def team() -> None:
         team_members = participants[i : i+5]
         i += 5
         t = Team(leader=team_members[0], event=event, name=''.join(map(lambda c : string.ascii_lowercase[int(c)-1], ''.join(str(time.time()).split('.')))))
+        time.sleep(.001)
         teams.append(t)
         for member in team_members[1:]:
             team_wise_participants.append(TeamWiseParticipants(team=t, participant=member))
@@ -271,6 +273,7 @@ def team() -> None:
         team_members = participants[i : i+5]
         i += 5
         t = Team(leader=team_members[0], event=event, name=''.join(map(lambda c : string.ascii_lowercase[int(c)-1], ''.join(str(time.time()).split('.')))))
+        time.sleep(.001)
         teams.append(t)
         for member in team_members[1:]:
             team_wise_participants.append(TeamWiseParticipants(team=t, participant=member))
@@ -278,6 +281,7 @@ def team() -> None:
         team_members = participants[i : i+5]
         i += 5
         t = Team(leader=team_members[0], event=event, name=''.join(map(lambda c : string.ascii_lowercase[int(c)-1], ''.join(str(time.time()).split('.')))))
+        time.sleep(.001)
         teams.append(t)
         for member in team_members[1:]:
             team_wise_participants.append(TeamWiseParticipants(team=t, participant=member))

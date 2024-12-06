@@ -193,7 +193,7 @@ class ConstrainedImagePath(types.TypeDecorator[str]):
         root_dir = PurePath(os.path.join(current_app.instance_path, assets_dir))
         if not abs_path.is_relative_to(root_dir):
             raise ValueError(f'The file must be under {str(Path(root_dir).resolve())} but located at {str(Path(abs_path).resolve())}.') 
-        return str(abs_path.relative_to(root_dir))
+        return '/'.join(abs_path.relative_to(root_dir).parts)
     
     def __init__(self, max_bytes: int) -> None:
         self.max_bytes = max_bytes
